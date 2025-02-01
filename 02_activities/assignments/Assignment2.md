@@ -54,8 +54,33 @@ The store wants to keep customer addresses. Propose two architectures for the CU
 **HINT:** search type 1 vs type 2 slowly changing dimensions. 
 
 ```
-Your answer...
+
 ```
+
+Type 1 SCD – customer_addresses overwrite
+Customer_id
+Address line 1
+Address line 2
+City
+State/Province
+Country
+Postal Code
+
+
+Type 2 SCD – customer_addresses retain changes
+Customer_id
+Address_id
+Address line 1
+Address line 2
+City
+State/Province
+Country
+Postal Code
+Start_date
+End_date
+
+
+The architecture that overwrites the customer addresses is the type 1 slowly changing dimension. The architecture that retain changes is the type 2 slowly changing dimension.
 
 ***
 
@@ -86,6 +111,12 @@ Find the NULLs and then using COALESCE, replace the NULL with a blank for the fi
 
 **HINT**: keep the syntax the same, but edited the correct components with the string. The `||` values concatenate the columns into strings. Edit the appropriate columns -- you're making two edits -- and the NULL rows will be fixed. All the other rows will remain the same.
 
+
+SELECT 
+product_name || ', ' ||COALESCE (product_size,'')|| ' (' || COALESCE (product_qty_type,'unit') || ')'
+FROM product;
+
+
 <div align="center">-</div>
 
 #### Windowed Functions
@@ -95,9 +126,50 @@ You can either display all rows in the customer_purchases table, with the counte
 
 **HINT**: One of these approaches uses ROW_NUMBER() and one uses DENSE_RANK().
 
+SELECT 
+    customer_id,
+    market_date,
+    ROW_NUMBER() OVER (
+        PARTITION BY customer_id 
+        ORDER BY market_date
+    ) AS visit_number
+FROM (
+    SELECT DISTINCT customer_id, market_date 
+    FROM customer_purchases
+) unique_visits;
+
 2. Reverse the numbering of the query from a part so each customer’s most recent visit is labeled 1, then write another query that uses this one as a subquery (or temp table) and filters the results to only the customer’s most recent visit.
 
+WITH RecentVisits AS (
+    SELECT 
+        customer_id,
+        market_date,
+        ROW_NUMBER() OVER (
+            PARTITION BY customer_id 
+            ORDER BY market_date DESC
+        ) AS visit_number
+    FROM ( 
+        SELECT DISTINCT customer_id, market_date 
+        FROM customer_purchases
+    ) AS unique_visits  -- Added alias here
+)
+SELECT 
+    customer_id,
+    market_date
+FROM RecentVisits
+WHERE visit_number = 1;
+
+
 3. Using a COUNT() window function, include a value along with each row of the customer_purchases table that indicates how many different times that customer has purchased that product_id.
+
+SELECT DISTINCT
+    customer_id,
+    product_id,
+    COUNT(*) OVER (
+        PARTITION BY customer_id,product_id
+    ) AS purchase_count
+FROM customer_purchases;
+
 
 <div align="center">-</div>
 
@@ -110,12 +182,55 @@ You can either display all rows in the customer_purchases table, with the counte
 
 **HINT**: you might need to use INSTR(product_name,'-') to find the hyphens. INSTR will help split the column. 
 
+
+
 <div align="center">-</div>
 
 #### UNION
 1. Using a UNION, write a query that displays the market dates with the highest and lowest total sales.
 
 **HINT**: There are a possibly a few ways to do this query, but if you're struggling, try the following: 1) Create a CTE/Temp Table to find sales values grouped dates; 2) Create another CTE/Temp table with a rank windowed function on the previous query to create "best day" and "worst day"; 3) Query the second temp table twice, once for the best day, once for the worst day, with a UNION binding them. 
+
+DROP TABLE IF EXISTS sales_by_market_date; 
+
+CREATE TEMP TABLE sales_by_market_date AS
+SELECT 
+    market_date, 
+    SUM(sales) AS total_sales 
+FROM vendor_daily_sales
+GROUP BY market_date; 
+
+
+SELECT *
+,RANK() OVER(ORDER BY total_sales DESC) as [rank]
+
+FROM sales_by_market_date
+
+DROP TABLE IF EXISTS best_day;
+
+CREATE TEMP TABLE best_day AS
+SELECT *
+FROM (
+    SELECT 
+        market_date, 
+        total_sales, 
+        RANK() OVER(ORDER BY total_sales DESC) AS sales_rank
+    FROM sales_by_market_date
+) x
+WHERE sales_rank = 1;
+
+
+DROP TABLE IF EXISTS highest_and_lowest_sales;
+
+CREATE TEMP TABLE highest_and_lowest_sales AS
+SELECT market_date, total_sales, 'Best Day' AS category
+FROM temp.best_day
+
+UNION
+
+SELECT market_date, total_sales, 'Worst Day' AS category
+FROM temp.worst_day;
+
 
 ***
 
@@ -135,12 +250,41 @@ Steps to complete this part of the assignment:
 
 **HINT**: Be sure you select only relevant columns and rows. Remember, CROSS JOIN will explode your table rows, so CROSS JOIN should likely be a subquery. Think a bit about the row counts: how many distinct vendors, product names are there (x)? How many customers are there (y). Before your final group by you should have the product of those two queries (x\*y). 
 
+WITH customer_count AS (
+    SELECT COUNT(*) AS total_customers FROM customer
+)
+
+SELECT 
+    v.vendor_name,
+    p.product_name,
+    (5 * cc.total_customers * vi.original_price) AS total_revenue
+FROM vendor_inventory vi
+JOIN vendor v ON vi.vendor_id = v.vendor_id
+JOIN product p ON vi.product_id = p.product_id
+CROSS JOIN customer_count cc
+GROUP BY v.vendor_name, p.product_name;
+
+
+
 <div align="center">-</div>
 
 #### INSERT
 1. Create a new table "product_units". This table will contain only products where the `product_qty_type = 'unit'`. It should use all of the columns from the product table, as well as a new column for the `CURRENT_TIMESTAMP`.  Name the timestamp column `snapshot_timestamp`.
 
+DROP TABLE IF EXISTS product_units;
+CREATE TEMP TABLE product_units AS
+	SELECT *,CURRENT_TIMESTAMP AS Snapshot_timestamp
+	FROM product
+	WHERE product_qty_type = 'unit'
+
+
+
 2. Using `INSERT`, add a new row to the product_unit table (with an updated timestamp). This can be any product you desire (e.g. add another record for Apple Pie). 
+
+INSERT INTO product_units
+VALUES(26,'Mango Pie','10"',8,'unit',CURRENT_TIMESTAMP );
+SELECT * FROM product_units
+	
 
 <div align="center">-</div>
 
@@ -148,6 +292,12 @@ Steps to complete this part of the assignment:
 1. Delete the older record for the whatever product you added.
 
 **HINT**: If you don't specify a WHERE clause, [you are going to have a bad time](https://imgflip.com/i/8iq872).
+
+
+DELETE FROM product_units
+WHERE product_id=26;
+
+
 
 <div align="center">-</div>
 
@@ -162,7 +312,59 @@ Then, using `UPDATE`, change the current_quantity equal to the **last** `quantit
 
 **HINT**: This one is pretty hard. First, determine how to get the "last" quantity per product. Second, coalesce null values to 0 (if you don't have null values, figure out how to rearrange your query so you do.) Third, `SET current_quantity = (...your select statement...)`, remembering that WHERE can only accommodate one column. Finally, make sure you have a WHERE statement to update the right row, you'll need to use `product_units.product_id` to refer to the correct row within the product_units table. When you have all of these components, you can run the update statement.
 
+
+DROP TABLE IF EXISTS last_quantity;
+
+CREATE TABLE last_quantity AS
+SELECT 
+    product_id,
+    market_date,
+    quantity AS current_quantity
+FROM (
+    SELECT 
+        product_id,
+        market_date,
+        quantity,
+        ROW_NUMBER() OVER (
+            PARTITION BY product_id
+            ORDER BY market_date DESC
+        ) AS current_quantity
+    FROM (
+        SELECT DISTINCT product_id, market_date, quantity
+        FROM vendor_inventory
+    ) AS unique_quantity
+) AS ranked_data
+WHERE current_quantity = 1;
+
+
+UPDATE product_units
+SET current_quantity = (
+    SELECT last_quantity.current_quantity 
+    FROM last_quantity
+    WHERE last_quantity.product_id = product_units.product_id
+)
+WHERE EXISTS (
+    SELECT 1 FROM last_quantity 
+    WHERE last_quantity.product_id = product_units.product_id
+);
+
+UPDATE product_units
+SET current_quantity = COALESCE(current_quantity, 0);
+
+
+
+
+
+
+
 *** 
+
+
+
+
+
+
+
 
 ## Section 4:
 You can start this section anytime.
@@ -180,7 +382,13 @@ Read: Boykis, V. (2019, October 16). _Neural nets are just people all the way do
 
 Consider, for example, concepts of labour, bias, LLM proliferation, moderating content, intersection of technology and society, ect. 
 
+The rapid advance of artificial intelligence (AI) is indispensable of Fei Fei Li’s groundbreaking work in computer vision and the invention of ImageNet, a large-scale dataset designed for use in visual object recognition software search and the current “gold standard of machine learning”. While people amazed at the massive number of correctly labeled images in the ImageNet database, the lesser-known reality is that there are major ethical issues surrounding this technical advancement, which are exploitation of cheap labor and biased labeling of images. 
+One of the main ethical issues is that the massive correctly labeled images within the ImageNet database were labeled by people around the world using Amazon Mechanical Turk with extremely low wages. The contributions made by these “invisible” human labor is often ignored without any acknowledgement. Moreover, the words used for collecting these images from search engines were derived from WordNet, which is a word-specific database developed by George Miller and Christiane Fellbaum at Princeton University. A key foundation for WordNet was the Brown Corpus, developed by Henry Kučera and W. Nelson Francis at Brown University. However, it is little known that the Brown Corpus was built by graduate students compiling and categorizing words from newspaper clippings in the 1960s. These graduate students were unnamed and unacknowledged for their contributions to neither the Brown Corpus, WordNet, nor AI.
+Another concerning ethical issue surrounding AI is the bias in image labeling within ImageNet. WordNet contains biased and derogatory terms, including racial, gender, and class-based stereotypes, which were blindly inherited by ImageNet. These inherited stereotypes and biases might lead to discriminatory outcomes for certain AI applications such as facial recognition and automated hiring systems.
+While AI is revolutionizing our society, it also highlights the hidden biases in the training datasets. Addressing these biases is critical to ensure AI systems are fair, ethical, and inclusive.
+
+
 
 ```
-Your thoughts...
+
 ```
